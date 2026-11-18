@@ -2,53 +2,41 @@ name: 每日积分任务
 
 on:
   schedule:
-    # UTC 时间！"0 0" = 北京时间 08:00
+    # 每天北京时间 08:00 = UTC 00:00（主）
     - cron: "0 0 * * *"
-    # 北京时间 12:00 补跑：GitHub 高峰期会延迟/跳过定时任务，幂等所以重复跑无害
+    # 每天北京时间 12:00 = UTC 04:00（备用，08:00 被 GitHub 吞掉时补跑；幂等：签到/分享/已搬帖子重复跑不重复算分）
     - cron: "0 4 * * *"
-  workflow_dispatch:
+  workflow_dispatch:  # 允许手动点一下立即跑一次
 
-# 允许 keepalive 空提交，避免「60 天无活动 → 定时任务被 GitHub 自动禁用」
-permissions:
-  contents: write
+env:
+  BILI_KEYWORD: "奇瑞瑞虎8改装"
+  BILI_MAX: "6"
 
 jobs:
   daily:
-    # 固定 24.04：2026-10-19 起 ubuntu-latest 已迁到 26.04，ffmpeg/依赖有变动
-    runs-on: ubuntu-24.04
-    timeout-minutes: 10
+    runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6
         with:
           python-version: "3.11"
 
       - name: Install deps
-        run: pip install pycryptodome requests
+        run: pip install pycryptodome imageio-ffmpeg requests
 
-      # 签到 + 分享（B站素材下载/混剪/搬运发视频已移除：GitHub 美国 IP 会被 B站 412 风控）
       - name: Run sign-in and share
         env:
           CHERY_TOKEN: ${{ secrets.CHERY_TOKEN }}
-        # 关键：把「签到 FAIL 但退出码 0」变成红色告警，否则 token 过期会静默假绿
-        run: |
-          python src/daily.py --quick-only 2>&1 | tee run.log
-          if grep -q "FAIL 签到" run.log; then
-            echo "::error::签到失败，多半是 CHERY_TOKEN 过期，请重新获取（Actions → 获取 Token）"
-            exit 1
-          fi
+        run: python src/daily.py --quick-only
 
-      # 每月 1 号做一次空提交，让仓库保持「有活动」
-      # GitHub 60 天无 commit/issue/PR 会静默停掉所有 schedule，这一步是自保
-      - name: Keepalive
-        if: github.event_name == 'schedule' && startsWith(github.event.schedule, '0 0 ')
-        run: |
-          day=$(date -u +%d)
-          if [ "$day" = "01" ]; then
-            git config user.name "github-actions[bot]"
-            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-            git commit --allow-empty -m "chore: keepalive $(date -u +%Y-%m-%d)"
-            git push
-          fi
+      - name: Download videos
+        run: python src/video_downloader.py --download-only
+
+      - name: Make daily videos
+        run: python src/video_maker.py
+
+      - name: Run video tasks
+        env:
+          CHERY_TOKEN: ${{ secrets.CHERY_TOKEN }}
